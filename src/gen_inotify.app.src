@@ -1,0 +1,9 @@
+{application, gen_inotify, [
+  {description, "inotify bindings for Erlang"},
+  {vsn, "0.0.0"},
+  {registered, []},
+  {applications, [kernel, stdlib]},
+  {modules, []},
+  {mod, {gen_inotify_app, []}},
+  {env, []}
+]}.

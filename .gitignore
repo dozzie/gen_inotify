@@ -1,0 +1,13 @@
+.*.swp
+*.beam
+*.plt
+gen_inotify.d
+/.erlang.mk
+/ebin/*.app
+/doc/edoc-info
+/doc/*.png
+/doc/*.html
+/doc/*.css
+/priv/*.so
+/c_src/env.mk
+/c_src/*.o
