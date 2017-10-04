@@ -33,6 +33,11 @@ include erlang.install.mk
 
 C_SRC_OUTPUT_FILE = priv/gen_inotify_drv.so
 C_SRC_TYPE = shared
+CFLAGS += -D_XOPEN_SOURCE=500
+ifneq ($(devel),)
+CFLAGS := $(filter-out -O%,-g $(CFLAGS))
+LDFLAGS := $(filter-out -O%,-g $(LDFLAGS))
+endif
 
 #-----------------------------------------------------------------------------
 

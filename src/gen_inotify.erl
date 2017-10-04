@@ -1,5 +1,6 @@
 %%%---------------------------------------------------------------------------
 %%% @doc
+%%%   `inotify(7)' bindings for Erlang.
 %%% @end
 %%%---------------------------------------------------------------------------
 
@@ -7,7 +8,7 @@
 
 %% public interface
 -export([open/0, open/1, close/1]).
--export([add/3, update/3, remove/2]).
+-export([add/3, update/3, remove/2, list/1]).
 -export([controlling_process/2]).
 -export([format_error/1]).
 
@@ -16,6 +17,8 @@
 
 %%%---------------------------------------------------------------------------
 %%% types
+
+-define(DRIVER_NAME, gen_inotify_drv).
 
 -type handle() :: port().
 
@@ -37,7 +40,6 @@
 
 -type flag_event() :: watch_removed
                     | is_dir
-                    | overflow
                     | unmount.
 
 -type posix() :: inet:posix().
@@ -61,23 +63,56 @@ open() ->
   when Option :: recursive.
 
 open(_Options) ->
-  'TODO'.
+  try open_port({spawn_driver, ?DRIVER_NAME}, [binary]) of
+    Handle ->
+      {ok, Handle}
+  catch
+    error:Reason ->
+      {error, Reason}
+  end.
 
 %% @doc Close a handle.
 
 -spec close(handle()) ->
   ok.
 
-close(_Handle) ->
-  'TODO'.
+close(Handle) ->
+  try
+    unlink(Handle),
+    port_close(Handle)
+  catch
+    % this could be caused by port already being closed, which is expected in
+    % some cases
+    error:badarg -> ignore
+  end,
+  ok.
 
 %% @doc Assign a new owner to a handle.
 
 -spec controlling_process(handle(), pid()) ->
   ok | {error, not_owner | closed | badarg}.
 
-controlling_process(_Port, _Pid) ->
-  'TODO'.
+controlling_process(Handle, Pid) ->
+  try erlang:port_info(Handle, connected) of
+    {connected, Pid} ->
+      ok; % already the owner
+    {connected, Owner} when Owner /= self() ->
+      {error, not_owner};
+    {connected, _OldOwner} ->
+      try
+        port_connect(Handle, Pid),
+        unlink(Handle),
+        ok
+      catch
+        _:_ ->
+          {error, closed}
+      end;
+    undefined ->
+      {error, closed}
+  catch
+    _:_ ->
+      {error, badarg}
+  end.
 
 %% @doc Monitor a file or directory.
 %%
@@ -90,10 +125,15 @@ controlling_process(_Port, _Pid) ->
   ok | {error, badarg | posix()}
   when Option :: follow_symlink | unwatch_on_unlink | once | if_dir.
 
-add(_Handle, _Path, Flags) ->
+add(Handle, Path, Flags) ->
   case build_flags(Flags, add) of
-    {ok, _Value} ->
-      'TODO';
+    {ok, Value} ->
+      try port_control(Handle, 1, [<<Value:32>>, Path, 0]) of
+        <<>> -> ok;
+        ErrorName -> {error, binary_to_atom(ErrorName, latin1)}
+      catch
+        _:_ -> {error, badarg}
+      end;
     {error, badarg} ->
       {error, badarg}
   end.
@@ -109,10 +149,15 @@ add(_Handle, _Path, Flags) ->
   ok | {error, badarg | posix()}
   when Option :: follow_symlink | unwatch_on_unlink | once | if_dir.
 
-update(_Handle, _Path, Flags) ->
+update(Handle, Path, Flags) ->
   case build_flags(Flags, update) of
-    {ok, _Value} ->
-      'TODO';
+    {ok, Value} ->
+      try port_control(Handle, 1, [<<Value:32>>, Path, 0]) of
+        <<>> -> ok;
+        ErrorName -> {error, binary_to_atom(ErrorName, latin1)}
+      catch
+        _:_ -> {error, badarg}
+      end;
     {error, badarg} ->
       {error, badarg}
   end.
@@ -169,7 +214,21 @@ add_flag(if_dir,            Flags) -> Flags bor 16#8000.
 -spec remove(handle(), file:filename()) ->
   ok | {error, badarg}.
 
-remove(_Handle, _Path) ->
+remove(Handle, Path) ->
+  try port_control(Handle, 2, [Path, 0]) of
+    <<>> -> ok;
+    ErrorName -> {error, binary_to_atom(ErrorName, latin1)}
+  catch
+    _:_ -> {error, badarg}
+  end.
+
+%% @doc List watched paths.
+
+-spec list(handle()) ->
+  {ok, [Entry]} | {error, badarg}
+  when Entry :: {file:filename(), [flag()]}.
+
+list(_Handle) ->
   'TODO'.
 
 %%%---------------------------------------------------------------------------
