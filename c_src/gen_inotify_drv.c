@@ -71,9 +71,32 @@ struct inotify_context {
 static uint32_t flags_to_inotify(uint32_t flags);
 static int send_inotify_event(struct inotify_context *context, struct inotify_event *event);
 
+// tuple tags
+static ErlDrvTermData atom_inotify;
+static ErlDrvTermData atom_inotify_error;
+// errors
+static ErlDrvTermData atom_queue_overflow;
+// event flags
+static ErlDrvTermData atom_watch_removed;
+static ErlDrvTermData atom_is_dir;
+static ErlDrvTermData atom_unmount;
+static ErlDrvTermData atom_access;
+static ErlDrvTermData atom_modify;
+static ErlDrvTermData atom_attrib;
+static ErlDrvTermData atom_create;
+static ErlDrvTermData atom_delete;
+static ErlDrvTermData atom_open;
+static ErlDrvTermData atom_close_write;
+static ErlDrvTermData atom_close_nowrite;
+static ErlDrvTermData atom_move_from;
+static ErlDrvTermData atom_move_to;
+static ErlDrvTermData atom_delete_self;
+static ErlDrvTermData atom_move_self;
+
 //----------------------------------------------------------
 // entry point definition {{{
 
+static int          cdrv_init(void);
 static ErlDrvData   cdrv_start(ErlDrvPort port, char *cmd);
 static void         cdrv_stop(ErlDrvData drv_data);
 static ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command, char *buf, ErlDrvSizeT len, char **rbuf, ErlDrvSizeT rlen);
@@ -81,7 +104,7 @@ static void         cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event);
 static void         cdrv_stop_select(ErlDrvEvent event, void *reserved);
 
 ErlDrvEntry driver_entry = {
-  NULL,                         // int        init(void)
+  cdrv_init,                    // int        init(void)
   cdrv_start,                   // ErlDrvData start(ErlDrvPort port, char *cmd)
   cdrv_stop,                    // void       stop(ErlDrvData drv_data)
   NULL,                         // void       output(ErlDrvData drv_data, char *buf, ErlDrvSizeT len) // port_command/2 handler
@@ -111,6 +134,35 @@ ErlDrvEntry driver_entry = {
 DRIVER_INIT(PORT_DRIVER_NAME_SYM)
 {
   return &driver_entry;
+}
+
+// }}}
+//----------------------------------------------------------
+// Erlang port driver initialization {{{
+
+static
+int cdrv_init(void)
+{
+  atom_inotify_error  = driver_mk_atom("inotify_error");
+  atom_queue_overflow = driver_mk_atom("queue_overflow");
+  atom_inotify        = driver_mk_atom("inotify");
+  atom_watch_removed  = driver_mk_atom("watch_removed");
+  atom_is_dir         = driver_mk_atom("is_dir");
+  atom_unmount        = driver_mk_atom("unmount");
+  atom_access         = driver_mk_atom("access");
+  atom_modify         = driver_mk_atom("modify");
+  atom_attrib         = driver_mk_atom("attrib");
+  atom_create         = driver_mk_atom("create");
+  atom_delete         = driver_mk_atom("delete");
+  atom_open           = driver_mk_atom("open");
+  atom_close_write    = driver_mk_atom("close_write");
+  atom_close_nowrite  = driver_mk_atom("close_nowrite");
+  atom_move_from      = driver_mk_atom("move_from");
+  atom_move_to        = driver_mk_atom("move_to");
+  atom_delete_self    = driver_mk_atom("delete_self");
+  atom_move_self      = driver_mk_atom("move_self");
+
+  return 0;
 }
 
 // }}}
@@ -271,9 +323,9 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
   // short circuit for overflow error
   if ((ievent->mask & IN_Q_OVERFLOW) != 0) {
     ErlDrvTermData message[] = {
-      ERL_DRV_ATOM, driver_mk_atom("inotify_error"),
+      ERL_DRV_ATOM, atom_inotify_error,
       ERL_DRV_PORT, driver_mk_port(context->erl_port),
-      ERL_DRV_ATOM, driver_mk_atom("queue_overflow"),
+      ERL_DRV_ATOM, atom_queue_overflow,
       ERL_DRV_TUPLE, 3
     };
 
@@ -303,7 +355,7 @@ int send_inotify_event(struct inotify_context *context,
   size_t len = 0;
 
   message[len++] = ERL_DRV_ATOM;
-  message[len++] = driver_mk_atom("inotify");
+  message[len++] = atom_inotify;
   message[len++] = ERL_DRV_PORT;
   message[len++] = driver_mk_port(context->erl_port);
 
@@ -335,25 +387,25 @@ int send_inotify_event(struct inotify_context *context,
   if ((event->mask & flag) != 0) { \
     ++nflags; \
     message[len++] = ERL_DRV_ATOM; \
-    message[len++] = driver_mk_atom(atom); \
+    message[len++] = atom; \
   }
 
-  ADD_FLAG(IN_IGNORED, "watch_removed");
-  ADD_FLAG(IN_ISDIR,   "is_dir");
-  ADD_FLAG(IN_UNMOUNT, "unmount");
+  ADD_FLAG(IN_IGNORED, atom_watch_removed);
+  ADD_FLAG(IN_ISDIR,   atom_is_dir);
+  ADD_FLAG(IN_UNMOUNT, atom_unmount);
 
-  ADD_FLAG(IN_ACCESS,        "access");
-  ADD_FLAG(IN_MODIFY,        "modify");
-  ADD_FLAG(IN_ATTRIB,        "attrib");
-  ADD_FLAG(IN_CREATE,        "create");
-  ADD_FLAG(IN_DELETE,        "delete");
-  ADD_FLAG(IN_OPEN,          "open");
-  ADD_FLAG(IN_CLOSE_WRITE,   "close_write");
-  ADD_FLAG(IN_CLOSE_NOWRITE, "close_nowrite");
-  ADD_FLAG(IN_MOVED_FROM,    "move_from");
-  ADD_FLAG(IN_MOVED_TO,      "move_to");
-  ADD_FLAG(IN_DELETE_SELF,   "delete_self");
-  ADD_FLAG(IN_MOVE_SELF,     "move_self");
+  ADD_FLAG(IN_ACCESS,        atom_access);
+  ADD_FLAG(IN_MODIFY,        atom_modify);
+  ADD_FLAG(IN_ATTRIB,        atom_attrib);
+  ADD_FLAG(IN_CREATE,        atom_create);
+  ADD_FLAG(IN_DELETE,        atom_delete);
+  ADD_FLAG(IN_OPEN,          atom_open);
+  ADD_FLAG(IN_CLOSE_WRITE,   atom_close_write);
+  ADD_FLAG(IN_CLOSE_NOWRITE, atom_close_nowrite);
+  ADD_FLAG(IN_MOVED_FROM,    atom_move_from);
+  ADD_FLAG(IN_MOVED_TO,      atom_move_to);
+  ADD_FLAG(IN_DELETE_SELF,   atom_delete_self);
+  ADD_FLAG(IN_MOVE_SELF,     atom_move_self);
 
   message[len++] = ERL_DRV_NIL;
   message[len++] = ERL_DRV_LIST;
