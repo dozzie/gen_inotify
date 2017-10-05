@@ -131,7 +131,7 @@ controlling_process(Handle, Pid) ->
 add(Handle, Path, Flags) ->
   case build_flags(Flags, add) of
     {ok, Value} ->
-      try port_control(Handle, 1, [<<Value:32>>, Path, 0]) of
+      try port_control(Handle, 1, [<<Value:32>>, Path]) of
         <<>> -> ok;
         ErrorName -> {error, binary_to_atom(ErrorName, latin1)}
       catch
@@ -155,7 +155,7 @@ add(Handle, Path, Flags) ->
 update(Handle, Path, Flags) ->
   case build_flags(Flags, update) of
     {ok, Value} ->
-      try port_control(Handle, 1, [<<Value:32>>, Path, 0]) of
+      try port_control(Handle, 1, [<<Value:32>>, Path]) of
         <<>> -> ok;
         ErrorName -> {error, binary_to_atom(ErrorName, latin1)}
       catch
@@ -218,7 +218,7 @@ add_flag(if_dir,            Flags) -> Flags bor 16#8000.
   ok | {error, badarg}.
 
 remove(Handle, Path) ->
-  try port_control(Handle, 2, [Path, 0]) of
+  try port_control(Handle, 2, Path) of
     <<>> -> ok;
     ErrorName -> {error, binary_to_atom(ErrorName, latin1)}
   catch

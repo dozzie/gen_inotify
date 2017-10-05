@@ -66,11 +66,13 @@ struct watch {
 struct inotify_context {
   ErlDrvPort erl_port;
   int fd;
+  uint8_t real_path;
   struct watch *watches;
   size_t nwatches;
   size_t max_watches;
 };
 
+static ssize_t copy_path(char *path, size_t path_len, char *output, int real);
 static uint32_t flags_to_inotify(uint32_t flags);
 static int send_inotify_event(struct inotify_context *context, struct inotify_event *event);
 static int send_inotify_error(struct inotify_context *context, ErlDrvTermData error_atom);
@@ -184,6 +186,7 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
     driver_alloc(sizeof(struct inotify_context));
 
   context->erl_port = port;
+  context->real_path = 1;
   context->watches = NULL;
   context->nwatches = 0;
   context->max_watches = 0;
@@ -257,7 +260,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
                                (uint8_t)buf[1] << (8 * 2) |
                                (uint8_t)buf[2] << (8 * 1) |
                                (uint8_t)buf[3] << (8 * 0));
-      if (realpath(buf + 4, path) == NULL)
+      if (copy_path(buf + 4, len - 4, path, context->real_path) < 0)
         return store_errno(errno, *rbuf, rlen);
 
       if ((wd = inotify_add_watch(context->fd, path, flags)) >= 0) {
@@ -272,7 +275,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     // }}}
 
     case 2: // remove watch {{{
-      if (realpath(buf, path) == NULL)
+      if (copy_path(buf, len, path, context->real_path) < 0)
         return store_errno(errno, *rbuf, rlen);
 
       wd = watch_remove(context, path);
@@ -543,6 +546,34 @@ char* watch_find(struct inotify_context *context, struct inotify_event *event,
     *path_len = name_len;
 
   return result->path;
+}
+
+// }}}
+//----------------------------------------------------------------------------
+// copy path to NUL-terminated buffer, maybe with resolving symlinks {{{
+
+static
+ssize_t copy_path(char *path, size_t path_len, char *output, int real)
+{
+  if (path_len >= PATH_MAX) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+
+  if (!real) {
+    memcpy(output, path, path_len);
+    output[path_len] = 0;
+    return path_len;
+  }
+
+  char tmppath[PATH_MAX];
+  memcpy(tmppath, path, path_len);
+  tmppath[path_len] = 0;
+
+  if (realpath(tmppath, output) == NULL)
+    return -1;
+
+  return 0;
 }
 
 // }}}
