@@ -234,8 +234,28 @@ remove(Handle, Path) ->
   {ok, [Entry]} | {error, badarg}
   when Entry :: {file:filename(), [flag()]}.
 
-list(_Handle) ->
-  'TODO'.
+list(Handle) ->
+  try port_control(Handle, 3, <<>>) of
+    <<Count:32>> ->
+      Entries = receive_listing(Handle, Count, []),
+      {ok, Entries}
+  catch
+    _:_ -> {error, badarg}
+  end.
+
+%% @doc Workhorse for {@link list/1}.
+
+-spec receive_listing(handle(), non_neg_integer(), [Entry]) ->
+  [Entry]
+  when Entry :: {file:filename(), [flag()]}.
+
+receive_listing(_Handle, 0 = _Count, Entries) ->
+  Entries;
+receive_listing(Handle, Count, Entries) when Count > 0 ->
+  receive
+    {inotify_listing, Handle, _WD, Path, Flags} ->
+      receive_listing(Handle, Count - 1, [{Path, Flags} | Entries])
+  end.
 
 %%%---------------------------------------------------------------------------
 

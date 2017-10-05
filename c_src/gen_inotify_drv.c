@@ -76,6 +76,7 @@ static ssize_t copy_path(char *path, size_t path_len, char *output, int real);
 static uint32_t flags_to_inotify(uint32_t flags);
 static int send_inotify_event(struct inotify_context *context, struct inotify_event *event);
 static int send_inotify_error(struct inotify_context *context, ErlDrvTermData error_atom);
+static int send_watch_entry(struct inotify_context *context, ErlDrvTermData receiver, struct watch *watch);
 
 static int   watch_add(struct inotify_context *context, int wd, uint32_t flags, char *path);
 static int   watch_find_wd(struct inotify_context *context, char *path);
@@ -84,9 +85,11 @@ static void  watch_remove(struct inotify_context *context, int wd);
 
 // tuple tags
 static ErlDrvTermData atom_inotify;
+static ErlDrvTermData atom_inotify_listing;
 static ErlDrvTermData atom_inotify_error;
 // errors
 static ErlDrvTermData atom_queue_overflow;
+static ErlDrvTermData atom_eol;
 // event flags
 static ErlDrvTermData atom_watch_removed;
 static ErlDrvTermData atom_is_dir;
@@ -154,6 +157,8 @@ DRIVER_INIT(PORT_DRIVER_NAME_SYM)
 static
 int cdrv_init(void)
 {
+  atom_inotify_listing = driver_mk_atom("inotify_listing");
+  atom_eol = driver_mk_atom("eol");
   atom_inotify_error  = driver_mk_atom("inotify_error");
   atom_queue_overflow = driver_mk_atom("queue_overflow");
   atom_inotify        = driver_mk_atom("inotify");
@@ -255,6 +260,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   char path[PATH_MAX];
   int wd;
 
+  struct watch *watch;
+  ErlDrvTermData caller;
+
   switch (command) {
     case 1: // add/update watch {{{
       if (len < 5) // uint32_t + at least one character for filename
@@ -292,9 +300,21 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       return 0;
     // }}}
 
-    //case 3: // list watches
-    //  TODO: send watch listing to driver_caller(context->erl_port)
-    //  return 0;
+    case 3: // list watches {{{
+      if (4 > rlen) *rbuf = driver_alloc(4);
+      caller = driver_caller(context->erl_port);
+
+      for (watch = context->watches;
+           watch < context->watches + context->nwatches;
+           ++watch) {
+        send_watch_entry(context, caller, watch);
+      }
+      (*rbuf)[0] = (context->nwatches >> (8 * 3)) & 0xff;
+      (*rbuf)[1] = (context->nwatches >> (8 * 2)) & 0xff;
+      (*rbuf)[2] = (context->nwatches >> (8 * 1)) & 0xff;
+      (*rbuf)[3] = (context->nwatches >> (8 * 0)) & 0xff;
+      return 4;
+    // }}}
 
     default: // unknown request
       return -1;
@@ -363,6 +383,64 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 //----------------------------------------------------------
 
 //----------------------------------------------------------------------------
+// sending listing messages {{{
+
+static
+int send_watch_entry(struct inotify_context *context, ErlDrvTermData receiver,
+                     struct watch *watch)
+{
+  // XXX: watch the size of this array and maximum message size
+  ErlDrvTermData message[64];
+  size_t len = 0;
+
+  message[len++] = ERL_DRV_ATOM;
+  message[len++] = atom_inotify_listing;
+  message[len++] = ERL_DRV_PORT;
+  message[len++] = driver_mk_port(context->erl_port);
+
+  message[len++] = ERL_DRV_INT;
+  message[len++] = (ErlDrvTermData)watch->wd;
+
+  message[len++] = ERL_DRV_STRING;
+  message[len++] = (ErlDrvTermData)watch->path;
+  message[len++] = watch->path_len;
+
+  size_t nflags = 0;
+
+#define ADD_FLAG(flag, atom) \
+  if ((watch->flags & flag) != 0) { \
+    ++nflags; \
+    message[len++] = ERL_DRV_ATOM; \
+    message[len++] = atom; \
+  }
+
+  ADD_FLAG(IN_ACCESS,        atom_access);
+  ADD_FLAG(IN_MODIFY,        atom_modify);
+  ADD_FLAG(IN_ATTRIB,        atom_attrib);
+  ADD_FLAG(IN_CREATE,        atom_create);
+  ADD_FLAG(IN_DELETE,        atom_delete);
+  ADD_FLAG(IN_OPEN,          atom_open);
+  ADD_FLAG(IN_CLOSE_WRITE,   atom_close_write);
+  ADD_FLAG(IN_CLOSE_NOWRITE, atom_close_nowrite);
+  ADD_FLAG(IN_MOVED_FROM,    atom_move_from);
+  ADD_FLAG(IN_MOVED_TO,      atom_move_to);
+  ADD_FLAG(IN_DELETE_SELF,   atom_delete_self);
+  ADD_FLAG(IN_MOVE_SELF,     atom_move_self);
+
+#undef ADD_FLAG
+
+  message[len++] = ERL_DRV_NIL;
+  message[len++] = ERL_DRV_LIST;
+  message[len++] = nflags + 1 /* for ERL_DRV_NIL */;
+
+  message[len++] = ERL_DRV_TUPLE;
+  message[len++] = 5; // {inotify_listing, Port, WD, Path, Flags}
+
+  return driver_send_term(context->erl_port, receiver, message, len);
+}
+
+// }}}
+//----------------------------------------------------------------------------
 // sending events {{{
 
 static
@@ -418,6 +496,8 @@ int send_inotify_event(struct inotify_context *context,
   ADD_FLAG(IN_MOVED_TO,      atom_move_to);
   ADD_FLAG(IN_DELETE_SELF,   atom_delete_self);
   ADD_FLAG(IN_MOVE_SELF,     atom_move_self);
+
+#undef ADD_FLAG
 
   message[len++] = ERL_DRV_NIL;
   message[len++] = ERL_DRV_LIST;
