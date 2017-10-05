@@ -26,9 +26,14 @@
 
 -type message() ::
     {inotify, handle(), file:filename() | undefined, cookie(),
-      [flag() | flag_event()]}
+      [flag() | flag_event(), ...]}
   | {inotify_error, handle(), queue_overflow | posix()}.
 %% Filename is an absolute path. `undefined' should never happen.
+%%
+%% Flags `unmount' and `watch_removed' are always sent with no other
+%% accompanying flag.
+%%
+%% If `is_dir' flag is present, it's always the first one.
 
 -type flag() :: access
               | modify
@@ -44,6 +49,7 @@
 -type flag_event() :: watch_removed
                     | is_dir
                     | unmount.
+%% See {@type message()} for details about these flags' positions and company.
 
 -type posix() :: inet:posix().
 

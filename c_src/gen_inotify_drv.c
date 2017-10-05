@@ -75,6 +75,7 @@ struct inotify_context {
 static ssize_t copy_path(char *path, size_t path_len, char *output, int real);
 static uint32_t flags_to_inotify(uint32_t flags);
 static int send_inotify_event(struct inotify_context *context, struct inotify_event *event);
+static int send_inotify_single_flag_event(struct inotify_context *context, struct inotify_event *event, ErlDrvTermData flag_atom);
 static int send_inotify_error(struct inotify_context *context, ErlDrvTermData error_atom);
 static int send_watch_entry(struct inotify_context *context, ErlDrvTermData receiver, struct watch *watch);
 
@@ -372,10 +373,21 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 
     // TODO: add recursively if ((ievent->mask & IN_ISDIR) != 0)
 
-    send_inotify_event(context, ievent);
+    // XXX: `watch_removed' and `unmount' flags are always sent as a separate
+    // messages, though inotify docs don't guarantee that; if `unmount' and/or
+    // `watch_removed' come with other flags, other flags are sent first, and
+    // `watch_removed' is sent last
 
-    if ((ievent->mask & IN_IGNORED) != 0)
+    if ((ievent->mask & ~(IN_UNMOUNT | IN_IGNORED)) != 0)
+      send_inotify_event(context, ievent);
+
+    if ((ievent->mask & IN_UNMOUNT) != 0)
+      send_inotify_single_flag_event(context, ievent, atom_unmount);
+
+    if ((ievent->mask & IN_IGNORED) != 0) {
+      send_inotify_single_flag_event(context, ievent, atom_watch_removed);
       watch_remove(context, ievent->wd);
+    }
   }
 }
 
@@ -444,6 +456,47 @@ int send_watch_entry(struct inotify_context *context, ErlDrvTermData receiver,
 // sending events {{{
 
 static
+int send_inotify_single_flag_event(struct inotify_context *context,
+                                   struct inotify_event *event,
+                                   ErlDrvTermData flag_atom)
+{
+  // XXX: watch the size of this array and maximum message size
+  ErlDrvTermData message[20];
+  size_t len = 0;
+
+  message[len++] = ERL_DRV_ATOM;
+  message[len++] = atom_inotify;
+  message[len++] = ERL_DRV_PORT;
+  message[len++] = driver_mk_port(context->erl_port);
+
+  size_t path_len = 0;
+  char *path = watch_find(context, event, &path_len);
+
+  if (path != NULL) {
+    message[len++] = ERL_DRV_STRING;
+    message[len++] = (ErlDrvTermData)path;
+    message[len++] = path_len;
+  } else { // (path == NULL); this should never happen
+    message[len++] = ERL_DRV_ATOM;
+    message[len++] = driver_mk_atom("undefined");
+  }
+
+  message[len++] = ERL_DRV_UINT;
+  message[len++] = event->cookie;
+
+  message[len++] = ERL_DRV_ATOM;
+  message[len++] = flag_atom;
+  message[len++] = ERL_DRV_NIL;
+  message[len++] = ERL_DRV_LIST;
+  message[len++] = 2 /* atom + NIL (`[]') */;
+
+  message[len++] = ERL_DRV_TUPLE;
+  message[len++] = 5; // {inotify, Port, Path, Cookie, [Flag]}
+
+  return driver_output_term(context->erl_port, message, len);
+}
+
+static
 int send_inotify_event(struct inotify_context *context,
                        struct inotify_event *event)
 {
@@ -480,9 +533,8 @@ int send_inotify_event(struct inotify_context *context,
     message[len++] = atom; \
   }
 
-  ADD_FLAG(IN_IGNORED, atom_watch_removed);
-  ADD_FLAG(IN_ISDIR,   atom_is_dir);
-  ADD_FLAG(IN_UNMOUNT, atom_unmount);
+  // XXX: this flag is promised to go first
+  ADD_FLAG(IN_ISDIR, atom_is_dir);
 
   ADD_FLAG(IN_ACCESS,        atom_access);
   ADD_FLAG(IN_MODIFY,        atom_modify);
