@@ -265,6 +265,16 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   ErlDrvTermData caller;
 
   switch (command) {
+    case 0: // initialize port {{{
+      if (len != 2)
+        return -1;
+
+      //context->recursive = buf[0]; // TODO: implement me
+      context->real_path = buf[1];
+
+      return 0;
+    // }}}
+
     case 1: // add/update watch {{{
       if (len < 5) // uint32_t + at least one character for filename
         return -1;
