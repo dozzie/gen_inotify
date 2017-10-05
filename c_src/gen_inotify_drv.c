@@ -78,8 +78,9 @@ static int send_inotify_event(struct inotify_context *context, struct inotify_ev
 static int send_inotify_error(struct inotify_context *context, ErlDrvTermData error_atom);
 
 static int   watch_add(struct inotify_context *context, int wd, uint32_t flags, char *path);
-static int   watch_remove(struct inotify_context *context, char *path);
+static int   watch_find_wd(struct inotify_context *context, char *path);
 static char* watch_find(struct inotify_context *context, struct inotify_event *event, size_t *path_len);
+static void  watch_remove(struct inotify_context *context, int wd);
 
 // tuple tags
 static ErlDrvTermData atom_inotify;
@@ -278,7 +279,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       if (copy_path(buf, len, path, context->real_path) < 0)
         return store_errno(errno, *rbuf, rlen);
 
-      wd = watch_remove(context, path);
+      wd = watch_find_wd(context, path);
       if (wd >= 0 && inotify_rm_watch(context->fd, wd) < 0)
         return store_errno(errno, *rbuf, rlen);
 
@@ -346,6 +347,9 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
     // TODO: add recursively if ((ievent->mask & IN_ISDIR) != 0)
 
     send_inotify_event(context, ievent);
+
+    if ((ievent->mask & IN_IGNORED) != 0)
+      watch_remove(context, ievent->wd);
   }
 }
 
@@ -491,7 +495,28 @@ int watch_add(struct inotify_context *context, int wd, uint32_t flags,
 }
 
 static
-int watch_remove(struct inotify_context *context, char *path)
+void watch_remove(struct inotify_context *context, int wd)
+{
+  struct watch *end = context->watches + context->nwatches;
+  struct watch *current = context->watches;
+
+  while (current < end && current->wd != wd)
+    ++current;
+
+  if (current < end) {
+    driver_free(current->path);
+    current->path = NULL;
+    --context->nwatches;
+
+    if (current < end - 1) {
+      memcpy(current, end - 1, sizeof(struct watch));
+      (end - 1)->path = NULL;
+    }
+  }
+}
+
+static
+int watch_find_wd(struct inotify_context *context, char *path)
 {
   size_t path_len = strlen(path);
 
@@ -500,17 +525,8 @@ int watch_remove(struct inotify_context *context, char *path)
 
   for (current = context->watches; current < end; ++current) {
     if (current->path_len == path_len &&
-        strncmp(current->path, path, path_len) == 0) {
-      int result_wd = current->wd;
-
-      driver_free(current->path);
-      --context->nwatches;
-
-      if (current < end - 1)
-        memcpy(current, end - 1, sizeof(struct watch));
-
-      return result_wd;
-    }
+        strncmp(current->path, path, path_len) == 0)
+      return current->wd;
   }
 
   return -1;

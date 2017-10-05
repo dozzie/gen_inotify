@@ -213,6 +213,9 @@ add_flag(if_dir,            Flags) -> Flags bor 16#8000.
 %%----------------------------------------------------------
 
 %% @doc Stop watching a file or directory.
+%%
+%%   After this function is called, the owner will receive {@type message()}
+%%   with `watch_removed' flag.
 
 -spec remove(handle(), file:filename()) ->
   ok | {error, badarg}.
