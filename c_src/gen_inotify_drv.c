@@ -72,6 +72,7 @@ struct inotify_context {
 
 static uint32_t flags_to_inotify(uint32_t flags);
 static int send_inotify_event(struct inotify_context *context, struct inotify_event *event);
+static int send_inotify_error(struct inotify_context *context, ErlDrvTermData error_atom);
 
 // tuple tags
 static ErlDrvTermData atom_inotify;
@@ -327,15 +328,7 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 
     // short circuit for overflow error
     if ((ievent->mask & IN_Q_OVERFLOW) != 0) {
-      ErlDrvTermData message[] = {
-        ERL_DRV_ATOM, atom_inotify_error,
-        ERL_DRV_PORT, driver_mk_port(context->erl_port),
-        ERL_DRV_ATOM, atom_queue_overflow,
-        ERL_DRV_TUPLE, 3
-      };
-
-      driver_output_term(context->erl_port, message,
-                         sizeof(message) / sizeof(message[0]));
+      send_inotify_error(context, atom_queue_overflow);
       driver_failure_eof(context->erl_port);
       return;
     }
@@ -350,7 +343,7 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 //----------------------------------------------------------
 
 //----------------------------------------------------------------------------
-// send_inotify_event() {{{
+// sending events {{{
 
 static
 int send_inotify_event(struct inotify_context *context,
@@ -421,6 +414,21 @@ int send_inotify_event(struct inotify_context *context,
   message[len++] = 4; // {inotify, Port, Path, Flags}
 
   return driver_output_term(context->erl_port, message, len);
+}
+
+static
+int send_inotify_error(struct inotify_context *context,
+                       ErlDrvTermData error_atom)
+{
+  ErlDrvTermData message[] = {
+    ERL_DRV_ATOM, atom_inotify_error,
+    ERL_DRV_PORT, driver_mk_port(context->erl_port),
+    ERL_DRV_ATOM, error_atom,
+    ERL_DRV_TUPLE, 3
+  };
+
+  return driver_output_term(context->erl_port, message,
+                            sizeof(message) / sizeof(message[0]));
 }
 
 // }}}
