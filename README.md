@@ -13,11 +13,14 @@ Details are in `inotify(7)` man page.
 * `/proc/sys/fs/inotify/max_user_instances`
 * `/proc/sys/fs/inotify/max_user_watches`
 
-Known limitations
------------------
+Known limitations and problems
+------------------------------
 
 * robust watching of a directory with its subdirectories is impossible, so
   "best effort" heuristics is used
+* watches on files that got renamed report the original filename
+* removing a watch on a file that got renamed requires using the original
+  filename
 
 Requirements
 ------------
