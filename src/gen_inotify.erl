@@ -18,7 +18,7 @@
 %%%---------------------------------------------------------------------------
 %%% types
 
--define(DRIVER_NAME, gen_inotify_drv).
+-define(DRIVER_NAME, "gen_inotify_drv").
 
 -type handle() :: port().
 
