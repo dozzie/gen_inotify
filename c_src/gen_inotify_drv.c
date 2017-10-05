@@ -313,7 +313,8 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 
   int result = read((long)event, buffer, sizeof(buffer));
   if (result < 0) {
-    driver_failure_posix(context->erl_port, errno);
+    if (errno != EAGAIN && errno != EWOULDBLOCK)
+      driver_failure_posix(context->erl_port, errno);
     return;
   }
   if (result == 0) {
