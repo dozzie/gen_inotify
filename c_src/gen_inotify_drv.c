@@ -377,6 +377,9 @@ int send_inotify_event(struct inotify_context *context,
     message[len++] = driver_mk_atom("undefined");
   }
 
+  message[len++] = ERL_DRV_UINT;
+  message[len++] = event->cookie;
+
   size_t nflags = 0;
 
 #define ADD_FLAG(flag, atom) \
@@ -408,7 +411,7 @@ int send_inotify_event(struct inotify_context *context,
   message[len++] = nflags + 1 /* for ERL_DRV_NIL */;
 
   message[len++] = ERL_DRV_TUPLE;
-  message[len++] = 4; // {inotify, Port, Path, Flags}
+  message[len++] = 5; // {inotify, Port, Path, Cookie, Flags}
 
   return driver_output_term(context->erl_port, message, len);
 }
