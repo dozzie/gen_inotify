@@ -59,20 +59,25 @@
 struct watch {
   int wd;         // watch descriptor
   uint32_t flags;
-  ErlDrvBinary *path;
+  char *path; // this will actually hold (path_len + 1 + NAME_MAX + 1) bytes
+  size_t path_len;
 };
 
 struct inotify_context {
   ErlDrvPort erl_port;
   int fd;
-  struct watch *paths; // order by `wd' field
-  size_t npaths;
-  size_t alloc_paths;
+  struct watch *watches;
+  size_t nwatches;
+  size_t max_watches;
 };
 
 static uint32_t flags_to_inotify(uint32_t flags);
 static int send_inotify_event(struct inotify_context *context, struct inotify_event *event);
 static int send_inotify_error(struct inotify_context *context, ErlDrvTermData error_atom);
+
+static int   watch_add(struct inotify_context *context, int wd, uint32_t flags, char *path);
+static int   watch_remove(struct inotify_context *context, char *path);
+static char* watch_find(struct inotify_context *context, struct inotify_event *event, size_t *path_len);
 
 // tuple tags
 static ErlDrvTermData atom_inotify;
@@ -179,9 +184,9 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
     driver_alloc(sizeof(struct inotify_context));
 
   context->erl_port = port;
-  context->paths = NULL;
-  context->npaths = 0;
-  context->alloc_paths = 0;
+  context->watches = NULL;
+  context->nwatches = 0;
+  context->max_watches = 0;
   context->fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   if (context->fd < 0) {
     driver_free(context);
@@ -209,10 +214,10 @@ void cdrv_stop(ErlDrvData drv_data)
   ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
   driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
 
-  if (context->paths != NULL) {
-    while (context->npaths > 0)
-      driver_free_binary(context->paths[--context->npaths].path);
-    driver_free(context->paths);
+  if (context->watches != NULL) {
+    while (context->nwatches > 0)
+      driver_free(context->watches[--context->nwatches].path);
+    driver_free(context->watches);
   }
 
   driver_free(context);
@@ -244,7 +249,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
   uint32_t flags;
   char path[PATH_MAX];
-  int result;
+  int wd;
 
   switch (command) {
     case 1: // add/update watch {{{
@@ -255,9 +260,11 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       if (realpath(buf + 4, path) == NULL)
         return store_errno(errno, *rbuf, rlen);
 
-      if ((result = inotify_add_watch(context->fd, path, flags)) >= 0) {
-        // `result' is a watch descriptor
-        // TODO: store it somewhere
+      if ((wd = inotify_add_watch(context->fd, path, flags)) >= 0) {
+        if (watch_add(context, wd, flags, path) != 0) {
+          driver_failure_posix(context->erl_port, ENOMEM);
+          return 0;
+        }
         return 0;
       } else { // error
         return store_errno(errno, *rbuf, rlen);
@@ -268,10 +275,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       if (realpath(buf, path) == NULL)
         return store_errno(errno, *rbuf, rlen);
 
-      // TODO: find the watch descriptor; if not found, return 0
-      //
-      // if (inotify_rm_watch(context->fd, wd) < 0)
-      //   return store_errno(errno, *rbuf, rlen);
+      wd = watch_remove(context, path);
+      if (wd >= 0 && inotify_rm_watch(context->fd, wd) < 0)
+        return store_errno(errno, *rbuf, rlen);
 
       return 0;
     // }}}
@@ -359,26 +365,16 @@ int send_inotify_event(struct inotify_context *context,
   message[len++] = ERL_DRV_PORT;
   message[len++] = driver_mk_port(context->erl_port);
 
-  // TODO: find path for `event->wd' and append `event->name' if non-empty
-  if (event->len > 0) {
-    message[len++] = ERL_DRV_INT;
-    message[len++] = event->wd;
+  size_t path_len = 0;
+  char *path = watch_find(context, event, &path_len);
 
+  if (path != NULL) {
     message[len++] = ERL_DRV_STRING;
-    message[len++] = (ErlDrvTermData)event->name;
-    message[len++] = strlen(event->name);
-
-    message[len++] = ERL_DRV_TUPLE;
-    message[len++] = 2;
-  } else {
-    message[len++] = ERL_DRV_INT;
-    message[len++] = event->wd;
-
+    message[len++] = (ErlDrvTermData)path;
+    message[len++] = path_len;
+  } else { // (path == NULL); this should never happen
     message[len++] = ERL_DRV_ATOM;
-    message[len++] = driver_mk_atom("self");
-
-    message[len++] = ERL_DRV_TUPLE;
-    message[len++] = 2;
+    message[len++] = driver_mk_atom("undefined");
   }
 
   size_t nflags = 0;
@@ -430,6 +426,120 @@ int send_inotify_error(struct inotify_context *context,
 
   return driver_output_term(context->erl_port, message,
                             sizeof(message) / sizeof(message[0]));
+}
+
+// }}}
+//----------------------------------------------------------------------------
+// watch management {{{
+
+static
+int watch_add(struct inotify_context *context, int wd, uint32_t flags,
+              char *path)
+{
+  // TODO: keep order by `wd', so binary search works
+
+  int flags_reset = ((flags & IN_MASK_ADD) == 0);
+  flags &= ~(IN_MASK_ADD | IN_DONT_FOLLOW | IN_ONESHOT | IN_ONLYDIR);
+
+  if (context->watches != NULL) {
+    struct watch *end = context->watches + context->nwatches;
+    struct watch *result = context->watches;
+
+    while (result < end && result->wd != wd)
+      ++result;
+
+    if (result != end) {
+      if (flags_reset)
+        result->flags = flags;
+      else
+        result->flags |= flags;
+
+      return 0;
+    }
+  }
+
+  if (context->watches == NULL) {
+    context->max_watches = 64;
+    size_t memsize = sizeof(struct watch) * context->max_watches;
+    context->watches = driver_alloc(memsize);
+  } else if (context->max_watches == context->nwatches) {
+    context->max_watches *= 2;
+    size_t memsize = sizeof(struct watch) * context->max_watches;
+    context->watches = driver_realloc(context->watches, memsize);
+    if (context->watches == NULL)
+      return -1;
+  }
+
+  struct watch *watch = context->watches + context->nwatches++;
+
+  watch->wd = wd;
+  watch->flags = flags;
+  watch->path_len = strlen(path);
+  // this must hold the actual path, slash, filename, and trailing NUL byte
+  watch->path = driver_alloc(watch->path_len + 1 + NAME_MAX + 1);
+
+  memcpy(watch->path, path, watch->path_len);
+  watch->path[watch->path_len] = 0;
+
+  return 0;
+}
+
+static
+int watch_remove(struct inotify_context *context, char *path)
+{
+  size_t path_len = strlen(path);
+
+  struct watch *end = context->watches + context->nwatches;
+  struct watch *current;
+
+  for (current = context->watches; current < end; ++current) {
+    if (current->path_len == path_len &&
+        strncmp(current->path, path, path_len) == 0) {
+      int result_wd = current->wd;
+
+      driver_free(current->path);
+      --context->nwatches;
+
+      if (current < end - 1)
+        memcpy(current, end - 1, sizeof(struct watch));
+
+      return result_wd;
+    }
+  }
+
+  return -1;
+}
+
+static
+char* watch_find(struct inotify_context *context, struct inotify_event *event,
+                 size_t *path_len)
+{
+  struct watch *end = context->watches + context->nwatches;
+  struct watch *result = context->watches;
+
+  while (result < end && result->wd != event->wd)
+    ++result;
+
+  if (result == end)
+    return NULL;
+
+  size_t name_len = result->path_len;
+
+  if (event->len > 0) {
+    result->path[name_len++] = '/';
+    size_t event_name_len = event->len;
+    while (event->name[event_name_len - 1] == 0)
+      --event_name_len;
+    memcpy(result->path + name_len, event->name, event_name_len);
+    name_len += event_name_len;
+  }
+
+  result->path[name_len] = 0;
+
+  if (path_len != NULL)
+    *path_len = name_len;
+
+  return result->path;
 }
 
 // }}}

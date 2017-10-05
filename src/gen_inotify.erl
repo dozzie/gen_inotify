@@ -23,9 +23,9 @@
 -type handle() :: port().
 
 -type message() ::
-    {inotify, handle(), file:filename(), [flag() | flag_event()]}
+    {inotify, handle(), file:filename() | undefined, [flag() | flag_event()]}
   | {inotify_error, handle(), queue_overflow | posix()}.
-%% Filename is an absolute path.
+%% Filename is an absolute path. `undefined' should never happen.
 
 -type flag() :: access
               | modify
