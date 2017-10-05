@@ -48,6 +48,8 @@
 
 #define FLAG_MASK_ADD        0x010000
 
+#define INOTIFY_MAX_EVENT_SIZE (sizeof(struct inotify_event) + NAME_MAX + 1)
+
 // }}}
 //----------------------------------------------------------
 
@@ -306,7 +308,7 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
   struct inotify_context *context = (struct inotify_context *)drv_data;
   // `event' is the input descriptor
 
-  char buffer[sizeof(struct inotify_event) + NAME_MAX + 1];
+  char buffer[INOTIFY_MAX_EVENT_SIZE * 32];
 
   int result = read((long)event, buffer, sizeof(buffer));
   if (result < 0) {
