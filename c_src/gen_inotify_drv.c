@@ -257,6 +257,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 
   switch (command) {
     case 1: // add/update watch {{{
+      if (len < 5) // uint32_t + at least one character for filename
+        return -1;
+
       flags = flags_to_inotify((uint8_t)buf[0] << (8 * 3) |
                                (uint8_t)buf[1] << (8 * 2) |
                                (uint8_t)buf[2] << (8 * 1) |
@@ -276,6 +279,9 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
     // }}}
 
     case 2: // remove watch {{{
+      if (len < 1) // at least one character for filename
+        return -1;
+
       if (copy_path(buf, len, path, context->real_path) < 0)
         return store_errno(errno, *rbuf, rlen);
 
