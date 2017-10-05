@@ -318,26 +318,30 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
     return;
   }
 
-  struct inotify_event *ievent = (struct inotify_event *)buffer;
+  char *next_event = buffer;
+  while (next_event < buffer + result) {
+    struct inotify_event *ievent = (struct inotify_event *)next_event;
+    next_event += sizeof(struct inotify_event) + ievent->len;
 
-  // short circuit for overflow error
-  if ((ievent->mask & IN_Q_OVERFLOW) != 0) {
-    ErlDrvTermData message[] = {
-      ERL_DRV_ATOM, atom_inotify_error,
-      ERL_DRV_PORT, driver_mk_port(context->erl_port),
-      ERL_DRV_ATOM, atom_queue_overflow,
-      ERL_DRV_TUPLE, 3
-    };
+    // short circuit for overflow error
+    if ((ievent->mask & IN_Q_OVERFLOW) != 0) {
+      ErlDrvTermData message[] = {
+        ERL_DRV_ATOM, atom_inotify_error,
+        ERL_DRV_PORT, driver_mk_port(context->erl_port),
+        ERL_DRV_ATOM, atom_queue_overflow,
+        ERL_DRV_TUPLE, 3
+      };
 
-    driver_output_term(context->erl_port, message,
-                       sizeof(message) / sizeof(message[0]));
-    driver_failure_eof(context->erl_port);
-    return;
+      driver_output_term(context->erl_port, message,
+                         sizeof(message) / sizeof(message[0]));
+      driver_failure_eof(context->erl_port);
+      return;
+    }
+
+    // TODO: add recursively if ((ievent->mask & IN_ISDIR) != 0)
+
+    send_inotify_event(context, ievent);
   }
-
-  // TODO: add recursively if ((ievent->mask & IN_ISDIR) != 0)
-
-  send_inotify_event(context, ievent);
 }
 
 // }}}
