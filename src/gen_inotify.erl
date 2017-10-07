@@ -8,7 +8,7 @@
 
 %% public interface
 -export([open/0, open/1, close/1]).
--export([add/3, update/3, remove/2, list/1]).
+-export([add/3, update/3, remove/2, list/1, count/1]).
 -export([controlling_process/2]).
 -export([format_error/1]).
 
@@ -299,16 +299,27 @@ remove(Handle, Path) ->
 %% @doc List watched paths.
 
 -spec list(handle()) ->
-  {ok, [Entry]} | {error, badarg}
+  [Entry]
   when Entry :: {file:filename(), [flag()]}.
 
 list(Handle) ->
   try port_control(Handle, 3, <<>>) of
-    <<Count:32>> ->
-      Entries = receive_listing(Handle, Count, []),
-      {ok, Entries}
+    <<Count:32>> -> receive_listing(Handle, Count, [])
   catch
-    _:_ -> {error, badarg}
+    _:_ -> erlang:error(badarg)
+  end.
+
+%% @doc Count watched paths.
+
+-spec count(handle()) ->
+  non_neg_integer().
+
+count(Handle) ->
+  try port_control(Handle, 4, <<>>) of
+    <<Count:32>> ->
+      Count
+  catch
+    _:_ -> erlang:error(badarg)
   end.
 
 %% @doc Workhorse for {@link list/1}.

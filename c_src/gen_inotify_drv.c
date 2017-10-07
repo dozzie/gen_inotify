@@ -340,6 +340,16 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       return 4;
     // }}}
 
+    case 4: // count watches {{{
+      if (4 > rlen) *rbuf = driver_alloc(4);
+
+      (*rbuf)[0] = (context->nwatches >> (8 * 3)) & 0xff;
+      (*rbuf)[1] = (context->nwatches >> (8 * 2)) & 0xff;
+      (*rbuf)[2] = (context->nwatches >> (8 * 1)) & 0xff;
+      (*rbuf)[3] = (context->nwatches >> (8 * 0)) & 0xff;
+      return 4;
+    // }}}
+
     default: // unknown request
       return -1;
   }
