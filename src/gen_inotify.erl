@@ -12,8 +12,8 @@
 -export([controlling_process/2]).
 -export([format_error/1]).
 
--export_type([handle/0, message/0, posix/0]).
--export_type([flag/0, flag_event/0, flag_scan/0]).
+-export_type([handle/0, message/0, message_event/0, message_error/0, posix/0]).
+-export_type([flag/0, flag_event/0]).
 
 %%%---------------------------------------------------------------------------
 %%% types
@@ -21,38 +21,65 @@
 -define(DRIVER_NAME, "gen_inotify_drv").
 
 -type handle() :: port().
+%% <i>inotify</i> port handle.
 
 -type cookie() :: non_neg_integer().
+%% Cookie to correlate events that compose a more complex event. Currently
+%% only `move_from' and `move_to' events use the cookie.
 
--type message() ::
-    {inotify, Handle :: handle(), Path :: file:filename() | undefined,
-      Cookie :: cookie(), Flags :: [flag() | flag_event() | flag_scan(), ...]}
-  | {inotify_error, Handle :: handle(),
-      Error :: queue_overflow | posix() | {file:filename(), posix()}}.
-%% Filename is an absolute path. `undefined' should never happen.
+-type message() :: message_event() | message_scan() | message_error().
+%% Filesystem event, directory listing, <i>inotify</i> error.
 %%
-%% Flags `unmount' and `watch_removed' are always sent with no other
-%% accompanying flag.
+%% {@type message_scan()} messages are only sent when a directory was added to
+%% watch list with `scan' flag and they carry the directory's current content,
+%% for which no normal events were generated (with the exception of a small
+%% race condition).
 %%
-%% If `is_dir' flag is present, it's always the first one.
+%% {@type message_scan()} messages follow the structure of regular events
+%% ({@type message_event()}) to allow newly created files and files already
+%% existing in the directory to be processed in the same function clause or
+%% `case' branch.
+
+-type message_scan() ::
+  {inotify, Handle :: handle(), Path :: file:filename(),
+    Cookie :: cookie(),
+    Flags :: [is_dir | present | {name, Basename :: file:filename()}, ...]}.
+%% Message sent for a a directory added with `scan' option. The message
+%% describes a file or (sub)directory that was already present in the
+%% directory at the moment of adding a watch.
 %%
-%% If a directory was added with `scan' option, it will result with zero or
-%% more messages with `present' and `{name,Basename}' flags (those flags can
-%% never be encountered without `scan' flag). These messages will always have
-%% the same order of flags: `is_dir' (if applicable), `present', and
-%% `{name,_}' (this one is a convenience helper that carries the last
-%% fragment of `Path'). Listing error is signaled as a message
-%% `{inotify_error,Handle,{Path,Errno}}'. The messages look like following:
+%% `Flags' for a subdirectory is a three elements list in following order:
+%% `[is_dir, present, {name,Basename}]'.
 %%
-%% <ul>
-%%   <li>`{inotify, Handle, Path, _Cookie, [is_dir, present, {name, Basename}]}'</li>
-%%   <li>`{inotify, Handle, Path, _Cookie, [present, {name, Basename}]}'</li>
-%%   <li>`{inotify_error, Handle, {Path, Errno}}'
-%%        (`Errno' is {@type posix()})</li>
-%% </ul>
+%% `Flags' list for a file has only two elements, `[present, {name,Basename}]'
+%% (the order is kept, similar to messages for subdirectories).
+%%
+%% `{name,Basename}' tuple is a convenience helper which carries the last
+%% segment of `Path'. It allows to handle dot-files (`.foo') in pattern match,
+%% for instance.
 %%
 %% Note that `scan' option will trigger read events, like `open' or
 %% `close_nowrite'.
+
+-type message_event() ::
+  {inotify, Handle :: handle(), Path :: file:filename(),
+    Cookie :: cookie(), Flags :: [flag() | flag_event(), ...]}.
+%% Filesystem event at `Path'.
+%%
+%% `Flags' list describes the event. See {@type flag()} and
+%% {@type flag_event()} for description of the meaning of each flag.
+
+-type message_error() ::
+  {inotify_error, Handle :: handle(),
+    Error :: queue_overflow | {file:filename(), posix()}}.
+%% Error encountered when watching files.
+%%
+%% `queue_overflow' can happen when a very busy directory is watched and
+%% the port driver cannot keep up. When this happens, port driver terminates
+%% and the owner process must open a new one.
+%%
+%% `{Path, Posix}' error is generated when a directory added with `scan' flag
+%% could not be read.
 
 -type flag() :: access
               | modify
@@ -64,21 +91,66 @@
               | move_from | move_to
               | delete_self
               | move_self.
+%% Filesystem event type to watch for.
+%%
+%% <ul>
+%%   <li>`access' -- watched object or its child was accessed/read (e.g. with
+%%       `read(2)')</li>
+%%   <li>`modify' -- watched object or its child was modified (e.g.
+%%       `write(2)')</li>
+%%   <li>`attrib' -- watched object's or its child's metadata was modified
+%%       (e.g. permissions, owner, group, timestamps, link count, extended
+%%       attributes)</li>
+%%   <li>`create' -- new child was created (`open(..., O_CREAT)', `mkdir(2)',
+%%       `mknod(2)', etc.) under watched object</li>
+%%   <li>`delete' -- a child was removed (`unlink(2)', `rmdir(2)') under
+%%       watched object</li>
+%%   <li>`open' -- watched object or its child was opened (`open(2)')</li>
+%%   <li>`close_write', `close_nowrite' -- watched object or its child was
+%%       closed (`close(2)')</li>
+%%   <li>`move_from', `move_to' -- a file or directory was moved from/to
+%%       watched object (`rename(2)'); this event carries a non-zero cookie,
+%%       to correlate `move_from' and `move_to' messages</li>
+%%   <li>`delete_self' -- watched object was deleted</li>
+%%   <li>`move_self' -- watched object was renamed</li>
+%% </ul>
+%%
+%% <i>NOTE</i>: If a file under watched directory was renamed, both events
+%% `move_from' and `move_to' will be generated, though there's no guarantee
+%% that they will be consecutive (i.e., an arbitrary number of other events
+%% may be recorded by <i>inotify</i> descriptor between the two).
+%%
+%% <i>NOTE</i>: It's possible to receive `move_from' event without
+%% accompanying `move_to' or vice versa. This means that the file was moved
+%% outside of the watched directory or from outside of the watched directory.
 
 -type flag_event() :: watch_removed
                     | is_dir
                     | unmount.
-%% See {@type message()} for details about these flags' positions and company.
-
--type flag_scan() :: present | {name, Basename :: file:filename()}.
+%% An event flag additional to {@type flag()}.
+%%
+%% Flag `is_dir', denotes that the object that generated the event is
+%% a directory. This flag, if present, is always the first element of the
+%% flags list.
+%%
+%% `unmount' event signals that the filesystem, on which the watched object
+%% was located, was unmounted. This flag is the only element of flags list, if
+%% present.
+%%
+%% `watch_removed' event signals that the watched object will no longer be
+%% generating any events. `watch_removed' event is sent for watches removed
+%% both implicitly (e.g. `unlink(2)', `rmdir(2)', or after `unmount' event)
+%% and explicitly (with {@link remove/2}). This flag is the only element of
+%% flags list, if present.
 
 -type posix() :: inet:posix().
+%% Atom representation of an `errno' value.
 
 %%%---------------------------------------------------------------------------
 %%% public interface
 %%%---------------------------------------------------------------------------
 
-%% @doc Open a new inotify handle.
+%% @doc Open a new <i>inotify</i> handle.
 
 -spec open() ->
   {ok, handle()} | {error, system_limit | posix()}.
@@ -86,7 +158,7 @@
 open() ->
   open([]).
 
-%% @doc Open a new inotify handle.
+%% @doc Open a new <i>inotify</i> handle.
 
 -spec open(Options :: [Option]) ->
   {ok, handle()} | {error, badarg | system_limit | posix()}
@@ -185,10 +257,30 @@ controlling_process(Handle, Pid) ->
 
 %% @doc Monitor a file or directory.
 %%
-%%   If the path was already watched, any previous flags will be replaced.
+%%   If `Path' was already watched, any previous flags will be replaced.
 %%
 %%   `close' and `move' flags are shorthands for `close_write'
 %%   + `close_nowrite' and for `move_from' + `move_to', respectively.
+%%
+%%   `scan' option causes {@type message_scan()} messages to be generated for
+%%   files already present in the directory. It should usually be accompanied
+%%   by `if_dir' option. Note that listing a directory produces `open' and
+%%   `close_nowrite' events.
+%%
+%%   `if_dir' option causes the watch only to be added if the `Path' is
+%%   a directory.
+%%
+%%   If `Path' is a symlink, `follow_symlink' option adds a watch for the
+%%   symlink's target instead of watching symlink itself.
+%%
+%%   `unwatch_on_unlink' causes the watch not to generate events for children
+%%   that were unlinked (e.g. `read(2)', `write(2)', and `close(2)' on a file
+%%   that was unlinked immediately after `open(2)').
+%%
+%%   `once' makes the watch to be removed after the first event on `Path'.
+%%   It's usually a poor idea to combine `once' and `scan' options.
+%%
+%% @see update/3
 
 -spec add(handle(), file:filename(), [flag() | close | move | Option]) ->
   ok | {error, badarg | posix()}
@@ -209,10 +301,11 @@ add(Handle, Path, Flags) ->
 
 %% @doc Add events to watch for for a file or directory.
 %%
-%%   If the path was not watched yet, it's added.
+%%   If `Path' was not watched yet, it's added.
 %%
-%%   `close' and `move' flags are shorthands for `close_write'
-%%   + `close_nowrite' and for `move_from' + `move_to', respectively.
+%%   For detailed description of options, see {@link add/3} function.
+%%
+%% @see add/3
 
 -spec update(handle(), file:filename(), [flag() | close | move | Option]) ->
   ok | {error, badarg | posix()}
