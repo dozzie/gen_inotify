@@ -13,7 +13,7 @@
 -export([format_error/1]).
 
 -export_type([handle/0, message/0, posix/0]).
--export_type([flag/0, flag_event/0]).
+-export_type([flag/0, flag_event/0, flag_scan/0]).
 
 %%%---------------------------------------------------------------------------
 %%% types
@@ -25,15 +25,34 @@
 -type cookie() :: non_neg_integer().
 
 -type message() ::
-    {inotify, handle(), file:filename() | undefined, cookie(),
-      [flag() | flag_event(), ...]}
-  | {inotify_error, handle(), queue_overflow | posix()}.
+    {inotify, Handle :: handle(), Path :: file:filename() | undefined,
+      Cookie :: cookie(), Flags :: [flag() | flag_event() | flag_scan(), ...]}
+  | {inotify_error, Handle :: handle(),
+      Error :: queue_overflow | posix() | {file:filename(), posix()}}.
 %% Filename is an absolute path. `undefined' should never happen.
 %%
 %% Flags `unmount' and `watch_removed' are always sent with no other
 %% accompanying flag.
 %%
 %% If `is_dir' flag is present, it's always the first one.
+%%
+%% If a directory was added with `scan' option, it will result with zero or
+%% more messages with `present' and `{name,Basename}' flags (those flags can
+%% never be encountered without `scan' flag). These messages will always have
+%% the same order of flags: `is_dir' (if applicable), `present', and
+%% `{name,_}' (this one is a convenience helper that carries the last
+%% fragment of `Path'). Listing error is signaled as a message
+%% `{inotify_error,Handle,{Path,Errno}}'. The messages look like following:
+%%
+%% <ul>
+%%   <li>`{inotify, Handle, Path, _Cookie, [is_dir, present, {name, Basename}]}'</li>
+%%   <li>`{inotify, Handle, Path, _Cookie, [present, {name, Basename}]}'</li>
+%%   <li>`{inotify_error, Handle, {Path, Errno}}'
+%%        (`Errno' is {@type posix()})</li>
+%% </ul>
+%%
+%% Note that `scan' option will trigger read events, like `open' or
+%% `close_nowrite'.
 
 -type flag() :: access
               | modify
@@ -50,6 +69,8 @@
                     | is_dir
                     | unmount.
 %% See {@type message()} for details about these flags' positions and company.
+
+-type flag_scan() :: present | {name, Basename :: file:filename()}.
 
 -type posix() :: inet:posix().
 
@@ -171,7 +192,7 @@ controlling_process(Handle, Pid) ->
 
 -spec add(handle(), file:filename(), [flag() | close | move | Option]) ->
   ok | {error, badarg | posix()}
-  when Option :: follow_symlink | unwatch_on_unlink | once | if_dir.
+  when Option :: scan | follow_symlink | unwatch_on_unlink | once | if_dir.
 
 add(Handle, Path, Flags) ->
   case build_flags(Flags, add) of
@@ -195,7 +216,7 @@ add(Handle, Path, Flags) ->
 
 -spec update(handle(), file:filename(), [flag() | close | move | Option]) ->
   ok | {error, badarg | posix()}
-  when Option :: follow_symlink | unwatch_on_unlink | once | if_dir.
+  when Option :: scan | follow_symlink | unwatch_on_unlink | once | if_dir.
 
 update(Handle, Path, Flags) ->
   case build_flags(Flags, update) of
@@ -233,7 +254,8 @@ build_flags(Flags, Op) ->
 
 -spec add_flag(Flag, non_neg_integer()) ->
   non_neg_integer()
-  when Flag :: flag() | follow_symlink | unwatch_on_unlink | once | if_dir.
+  when Flag :: flag()
+             | scan | follow_symlink | unwatch_on_unlink | once | if_dir.
 
 add_flag(access,            Flags) -> Flags bor 16#0001;
 add_flag(modify,            Flags) -> Flags bor 16#0002;
@@ -252,7 +274,8 @@ add_flag(move_self,         Flags) -> Flags bor 16#0800;
 add_flag(follow_symlink,    Flags) -> Flags band bnot 16#1000; % reverse flag
 add_flag(unwatch_on_unlink, Flags) -> Flags bor 16#2000;
 add_flag(once,              Flags) -> Flags bor 16#4000;
-add_flag(if_dir,            Flags) -> Flags bor 16#8000.
+add_flag(if_dir,            Flags) -> Flags bor 16#8000;
+add_flag(scan,              Flags) -> Flags bor 16#100000.
 
 %% }}}
 %%----------------------------------------------------------
@@ -315,6 +338,8 @@ format_error(badarg) ->
   "bad argument";
 format_error(closed) ->
   "file descriptor closed";
+format_error({Path, Errno}) ->
+  "error while scanning " ++ Path ++ ": " ++ inet:format_error(Errno);
 format_error(Errno) ->
   inet:format_error(Errno).
 

@@ -9,6 +9,9 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 
@@ -47,6 +50,7 @@
 #define FLAG_ONLYDIR           0x8000
 
 #define FLAG_MASK_ADD        0x010000
+#define FLAG_SCAN            0x100000
 
 #define INOTIFY_MAX_EVENT_SIZE (sizeof(struct inotify_event) + NAME_MAX + 1)
 
@@ -78,6 +82,7 @@ static int send_inotify_event(struct inotify_context *context, struct inotify_ev
 static int send_inotify_single_flag_event(struct inotify_context *context, struct inotify_event *event, ErlDrvTermData flag_atom);
 static int send_inotify_error(struct inotify_context *context, ErlDrvTermData error_atom);
 static int send_watch_entry(struct inotify_context *context, ErlDrvTermData receiver, struct watch *watch);
+static void scan_directory(struct inotify_context *context, char *dir_path, size_t dir_path_len);
 
 static int   watch_add(struct inotify_context *context, int wd, uint32_t flags, char *path);
 static int   watch_find_wd(struct inotify_context *context, char *path);
@@ -107,6 +112,8 @@ static ErlDrvTermData atom_move_from;
 static ErlDrvTermData atom_move_to;
 static ErlDrvTermData atom_delete_self;
 static ErlDrvTermData atom_move_self;
+static ErlDrvTermData atom_present;
+static ErlDrvTermData atom_name;
 
 //----------------------------------------------------------
 // entry point definition {{{
@@ -178,6 +185,8 @@ int cdrv_init(void)
   atom_move_to        = driver_mk_atom("move_to");
   atom_delete_self    = driver_mk_atom("delete_self");
   atom_move_self      = driver_mk_atom("move_self");
+  atom_present        = driver_mk_atom("present");
+  atom_name           = driver_mk_atom("name");
 
   return 0;
 }
@@ -257,7 +266,8 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
 {
   struct inotify_context *context = (struct inotify_context *)drv_data;
 
-  uint32_t flags;
+  uint32_t request_flags;
+  uint32_t inotify_flags;
   char path[PATH_MAX];
   int wd;
 
@@ -279,18 +289,21 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       if (len < 5) // uint32_t + at least one character for filename
         return -1;
 
-      flags = flags_to_inotify((uint8_t)buf[0] << (8 * 3) |
-                               (uint8_t)buf[1] << (8 * 2) |
-                               (uint8_t)buf[2] << (8 * 1) |
-                               (uint8_t)buf[3] << (8 * 0));
+      request_flags = (uint8_t)buf[0] << (8 * 3) | (uint8_t)buf[1] << (8 * 2) |
+                      (uint8_t)buf[2] << (8 * 1) | (uint8_t)buf[3] << (8 * 0);
+      inotify_flags = flags_to_inotify(request_flags);
       if (copy_path(buf + 4, len - 4, path, context->real_path) < 0)
         return store_errno(errno, *rbuf, rlen);
 
-      if ((wd = inotify_add_watch(context->fd, path, flags)) >= 0) {
-        if (watch_add(context, wd, flags, path) != 0) {
+      if ((wd = inotify_add_watch(context->fd, path, inotify_flags)) >= 0) {
+        if (watch_add(context, wd, inotify_flags, path) != 0) {
           driver_failure_posix(context->erl_port, ENOMEM);
           return 0;
         }
+
+        if ((request_flags & FLAG_SCAN) != 0)
+          scan_directory(context, path, 0);
+
         return 0;
       } else { // error
         return store_errno(errno, *rbuf, rlen);
@@ -404,6 +417,133 @@ void cdrv_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 // }}}
 //----------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// scanning directory for already present files/subdirs {{{
+
+static int scan_dir_send_entry(struct inotify_context *context,
+                               char *path, size_t path_len,
+                               char *basename, size_t basename_len,
+                               int is_dir);
+static int scan_dir_send_error(struct inotify_context *context,
+                               char *path, size_t path_len,
+                               ErlDrvTermData error_atom);
+static int is_directory(char *path, struct dirent *dir_entry);
+
+static
+void scan_directory(struct inotify_context *context, char *dir_path,
+                    size_t dir_path_len)
+{
+  if (dir_path_len == 0)
+    dir_path_len = strlen(dir_path);
+
+  if (dir_path_len >= PATH_MAX - 1)
+    return;
+
+  char file_path[PATH_MAX + NAME_MAX + 1]; // more than enough for a file path
+  memcpy(file_path, dir_path, dir_path_len);
+  file_path[dir_path_len] = 0;
+
+  // dir_path is not guaranteed to be NUL terminated; use file_path instead
+  DIR *dir = opendir(file_path);
+  if (dir == NULL) {
+    scan_dir_send_error(context, file_path, dir_path_len,
+                        driver_mk_atom(erl_errno_id(errno)));
+    return;
+  }
+  file_path[dir_path_len] = '/';
+
+  struct dirent entry;
+  struct dirent *result = NULL;
+  while (readdir_r(dir, &entry, &result) == 0 && result != NULL) {
+    if ((entry.d_name[0] == '.' && entry.d_name[1] == 0) ||
+        (entry.d_name[0] == '.' && entry.d_name[1] == '.' &&
+         entry.d_name[2] == 0))
+      continue;
+
+    size_t basename_len = strlen(entry.d_name);
+    // XXX: OS guarantees that the name is NUL-terminated and short enough
+    memcpy(file_path + dir_path_len + 1, entry.d_name, basename_len);
+
+    scan_dir_send_entry(context, file_path, dir_path_len + 1 + basename_len,
+                        entry.d_name, basename_len,
+                        is_directory(file_path, &entry));
+  }
+  // the only possible error here is EBADF, according to `man readdir'
+  closedir(dir);
+}
+
+static
+int is_directory(char *path, struct dirent *dir_entry)
+{
+  struct stat buffer;
+  return (dir_entry->d_type == DT_DIR) ||
+         (dir_entry->d_type == DT_UNKNOWN &&
+          lstat(path, &buffer) == 0 && S_ISDIR(buffer.st_mode));
+}
+
+static
+int scan_dir_send_entry(struct inotify_context *context,
+                        char *path, size_t path_len,
+                        char *basename, size_t basename_len,
+                        int is_dir)
+{
+  if (is_dir) {
+    ErlDrvTermData message[] = {
+      ERL_DRV_ATOM, atom_inotify,
+      ERL_DRV_PORT, driver_mk_port(context->erl_port),
+      ERL_DRV_STRING, (ErlDrvTermData)path, path_len,
+      ERL_DRV_INT, 0, // cookie
+        ERL_DRV_ATOM, atom_is_dir,
+        ERL_DRV_ATOM, atom_present,
+          ERL_DRV_ATOM, atom_name,
+          ERL_DRV_STRING, (ErlDrvTermData)basename, basename_len,
+        ERL_DRV_TUPLE, 2, // {name,Basename}
+        ERL_DRV_NIL,
+      ERL_DRV_LIST, 4,
+
+      ERL_DRV_TUPLE, 5
+    };
+    return driver_output_term(context->erl_port, message,
+                              sizeof(message) / sizeof(message[0]));
+  } else {
+    ErlDrvTermData message[] = {
+      ERL_DRV_ATOM, atom_inotify,
+      ERL_DRV_PORT, driver_mk_port(context->erl_port),
+      ERL_DRV_STRING, (ErlDrvTermData)path, path_len,
+      ERL_DRV_INT, 0, // cookie
+        ERL_DRV_ATOM, atom_present,
+          ERL_DRV_ATOM, atom_name,
+          ERL_DRV_STRING, (ErlDrvTermData)basename, basename_len,
+        ERL_DRV_TUPLE, 2, // {name,Basename}
+        ERL_DRV_NIL,
+      ERL_DRV_LIST, 3,
+
+      ERL_DRV_TUPLE, 5
+    };
+    return driver_output_term(context->erl_port, message,
+                              sizeof(message) / sizeof(message[0]));
+  }
+}
+
+static
+int scan_dir_send_error(struct inotify_context *context,
+                         char *path, size_t path_len,
+                         ErlDrvTermData error_atom)
+{
+  ErlDrvTermData message[] = {
+    ERL_DRV_ATOM, atom_inotify_error,
+    ERL_DRV_PORT, driver_mk_port(context->erl_port),
+      ERL_DRV_STRING, (ErlDrvTermData)path, path_len,
+      ERL_DRV_ATOM, error_atom,
+      ERL_DRV_TUPLE, 2,
+    ERL_DRV_TUPLE, 3
+  };
+
+  return driver_output_term(context->erl_port, message,
+                            sizeof(message) / sizeof(message[0]));
+}
+
+// }}}
 //----------------------------------------------------------------------------
 // sending listing messages {{{
 
