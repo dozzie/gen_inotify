@@ -728,32 +728,52 @@ int send_inotify_error(struct inotify_context *context,
 //----------------------------------------------------------------------------
 // watch management {{{
 
+// function returns
+//   * element with matching watch descriptor (if found)
+//   * the first element with larger watch descriptor (if not found)
+//   * one element past the array (if wd is larger than anything until now)
+//   * first array element if there's no watches recorded
+// for new descriptors, the function basically returns their insert place
+static
+struct watch* watch_lookup(struct inotify_context *context, int wd)
+{
+  if (context->nwatches == 0)
+    return context->watches;
+  if (wd < context->watches[0].wd)
+    return context->watches;
+  if (wd > context->watches[context->nwatches - 1].wd)
+    return context->watches + context->nwatches;
+
+  // XXX: [0] < wd < [nwatches - 1]
+
+  size_t begin = 0;
+  size_t end = context->nwatches;
+
+  while (begin < end - 1) {
+    size_t middle = begin + (end - begin) / 2;
+
+    if (wd == context->watches[middle].wd)
+      return context->watches + middle;
+    else if (wd < context->watches[middle].wd)
+      end = middle;
+    else // wd > context->watches[middle].wd
+      begin = middle;
+  }
+
+  if (wd > context->watches[begin].wd)
+    // (wd < context->watches[begin + 1].wd), because otherwise we would
+    // stop the bisection loop on (begin + 1) or later
+    return context->watches + begin + 1;
+  else
+    // (wd <= context->watches[begin].wd)
+    return context->watches + begin;
+}
+
 static
 int watch_add(struct inotify_context *context, int wd, uint32_t flags,
               char *path)
 {
-  // TODO: keep order by `wd', so binary search works
-
-  int flags_reset = ((flags & IN_MASK_ADD) == 0);
-  flags &= ~(IN_MASK_ADD | IN_DONT_FOLLOW | IN_ONESHOT | IN_ONLYDIR);
-
-  if (context->watches != NULL) {
-    struct watch *end = context->watches + context->nwatches;
-    struct watch *result = context->watches;
-
-    while (result < end && result->wd != wd)
-      ++result;
-
-    if (result != end) {
-      if (flags_reset)
-        result->flags = flags;
-      else
-        result->flags |= flags;
-
-      return 0;
-    }
-  }
-
+  // make sure there's at least one element free
   if (context->watches == NULL) {
     context->max_watches = 64;
     size_t memsize = sizeof(struct watch) * context->max_watches;
@@ -762,11 +782,33 @@ int watch_add(struct inotify_context *context, int wd, uint32_t flags,
     context->max_watches *= 2;
     size_t memsize = sizeof(struct watch) * context->max_watches;
     context->watches = driver_realloc(context->watches, memsize);
-    if (context->watches == NULL)
-      return -1;
+  }
+  if (context->watches == NULL) // out of memory
+    return -1;
+
+  int flags_reset = ((flags & IN_MASK_ADD) == 0);
+  flags &= ~(IN_MASK_ADD | IN_DONT_FOLLOW | IN_ONESHOT | IN_ONLYDIR);
+
+  struct watch *watch = watch_lookup(context, wd);
+  if (context->nwatches > 0 && watch < context->watches + context->nwatches &&
+      watch->wd == wd) {
+    // watch is in the recorded part and it matches
+    if (flags_reset)
+      watch->flags = flags;
+    else
+      watch->flags |= flags;
+
+    return 0;
   }
 
-  struct watch *watch = context->watches + context->nwatches++;
+  // NOTE: `watch' is past the last recorded element or (wd < watch->wd)
+
+  if (watch < context->watches + context->nwatches) {
+    // not the last element of the array, so move elements by 1 to make space
+    size_t nelems = context->nwatches - (watch - context->watches);
+    memmove(watch + 1, watch, sizeof(*watch) * nelems);
+  }
+  ++context->nwatches;
 
   watch->wd = wd;
   watch->flags = flags;
@@ -783,22 +825,20 @@ int watch_add(struct inotify_context *context, int wd, uint32_t flags,
 static
 void watch_remove(struct inotify_context *context, int wd)
 {
-  struct watch *end = context->watches + context->nwatches;
-  struct watch *current = context->watches;
+  if (context->nwatches == 0)
+    return;
 
-  while (current < end && current->wd != wd)
-    ++current;
+  struct watch *watch = watch_lookup(context, wd);
+  if (watch == context->watches + context->nwatches || watch->wd != wd)
+    return;
 
-  if (current < end) {
-    driver_free(current->path);
-    current->path = NULL;
-    --context->nwatches;
+  driver_free(watch->path);
 
-    if (current < end - 1) {
-      memcpy(current, end - 1, sizeof(struct watch));
-      (end - 1)->path = NULL;
-    }
+  if (watch < context->watches + context->nwatches - 1) {
+    size_t nelems = context->nwatches - 1 - (watch - context->watches);
+    memmove(watch, watch + 1, sizeof(*watch) * nelems);
   }
+  --context->nwatches;
 }
 
 static
@@ -822,32 +862,30 @@ static
 char* watch_find(struct inotify_context *context, struct inotify_event *event,
                  size_t *path_len)
 {
-  struct watch *end = context->watches + context->nwatches;
-  struct watch *result = context->watches;
-
-  while (result < end && result->wd != event->wd)
-    ++result;
-
-  if (result == end)
+  if (context->nwatches == 0)
     return NULL;
 
-  size_t name_len = result->path_len;
+  struct watch *watch = watch_lookup(context, event->wd);
+  if (watch == context->watches + context->nwatches || watch->wd != event->wd)
+    return NULL;
+
+  size_t name_len = watch->path_len;
 
   if (event->len > 0) {
-    result->path[name_len++] = '/';
+    watch->path[name_len++] = '/';
     size_t event_name_len = event->len;
     while (event->name[event_name_len - 1] == 0)
       --event_name_len;
-    memcpy(result->path + name_len, event->name, event_name_len);
+    memcpy(watch->path + name_len, event->name, event_name_len);
     name_len += event_name_len;
   }
 
-  result->path[name_len] = 0;
+  watch->path[name_len] = 0;
 
   if (path_len != NULL)
     *path_len = name_len;
 
-  return result->path;
+  return watch->path;
 }
 
 // }}}
