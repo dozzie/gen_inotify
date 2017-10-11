@@ -7,7 +7,7 @@
 -module(gen_inotify).
 
 %% public interface
--export([open/0, open/1, close/1]).
+-export([open/0, close/1]).
 -export([add/3, update/3, remove/2, list/1, count/1]).
 -export([controlling_process/2]).
 -export([format_error/1]).
@@ -156,61 +156,11 @@
   {ok, handle()} | {error, system_limit | posix()}.
 
 open() ->
-  open([]).
-
-%% @doc Open a new <i>inotify</i> handle.
-
--spec open(Options :: [Option]) ->
-  {ok, handle()} | {error, badarg | system_limit | posix()}
-  when Option :: recursive | real_path.
-
-open(Options) ->
-  case build_open_options_data(Options) of
-    {ok, OptData} ->
-      try open_port({spawn_driver, ?DRIVER_NAME}, [binary]) of
-        Handle ->
-          port_control(Handle, 0, OptData),
-          {ok, Handle}
-      catch
-        error:Reason ->
-          {error, Reason}
-      end;
-    {error, badarg} ->
-      {error, badarg}
-  end.
-
-%%----------------------------------------------------------
-%% build_open_options_data() {{{
-
-%% @doc Translate list of options to a `port_control(Port,0,_)' request
-%%   payload.
-
--spec build_open_options_data(Options :: [Option]) ->
-  {ok, {Recursive :: boolean(), UseRealPath :: boolean()}} | {error, badarg}
-  when Option :: recursive | real_path.
-
-build_open_options_data(Options) ->
-  DefaultOptions = {false, false}, % `{Recursive, UseRealPath}'
-  try lists:foldr(fun add_open_option/2, DefaultOptions, Options) of
-    {false, false} -> {ok, <<0:8, 0:8>>};
-    {true,  false} -> {ok, <<1:8, 0:8>>};
-    {false, true}  -> {ok, <<0:8, 1:8>>};
-    {true,  true}  -> {ok, <<1:8, 1:8>>}
+  try open_port({spawn_driver, ?DRIVER_NAME}, [binary]) of
+    Handle -> {ok, Handle}
   catch
-    _:_ -> {error, badarg}
+    error:Reason -> {error, Reason}
   end.
-
-%% @doc Workhorse for {@link build_open_options_data/1}.
-
--spec add_open_option(Option, {boolean(), boolean()}) ->
-  {boolean(), boolean()}
-  when Option :: recursive | real_path.
-
-add_open_option(recursive, {_Recursive, UseRealPath}) -> {true, UseRealPath};
-add_open_option(real_path, {Recursive, _UseRealPath}) -> {Recursive, true}.
-
-%% }}}
-%%----------------------------------------------------------
 
 %% @doc Close a handle.
 

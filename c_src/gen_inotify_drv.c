@@ -70,13 +70,12 @@ struct watch {
 struct inotify_context {
   ErlDrvPort erl_port;
   int fd;
-  uint8_t real_path;
   struct watch *watches;
   size_t nwatches;
   size_t max_watches;
 };
 
-static ssize_t copy_path(char *path, size_t path_len, char *output, int real);
+static ssize_t copy_path(char *path, size_t path_len, char *output);
 static uint32_t flags_to_inotify(uint32_t flags);
 static int send_inotify_event(struct inotify_context *context, struct inotify_event *event);
 static int send_inotify_single_flag_event(struct inotify_context *context, struct inotify_event *event, ErlDrvTermData flag_atom);
@@ -202,7 +201,6 @@ ErlDrvData cdrv_start(ErlDrvPort port, char *cmd)
     driver_alloc(sizeof(struct inotify_context));
 
   context->erl_port = port;
-  context->real_path = 1;
   context->watches = NULL;
   context->nwatches = 0;
   context->max_watches = 0;
@@ -275,16 +273,6 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
   ErlDrvTermData caller;
 
   switch (command) {
-    case 0: // initialize port {{{
-      if (len != 2)
-        return -1;
-
-      //context->recursive = buf[0]; // TODO: implement me
-      context->real_path = buf[1];
-
-      return 0;
-    // }}}
-
     case 1: // add/update watch {{{
       if (len < 5) // uint32_t + at least one character for filename
         return -1;
@@ -292,7 +280,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       request_flags = (uint8_t)buf[0] << (8 * 3) | (uint8_t)buf[1] << (8 * 2) |
                       (uint8_t)buf[2] << (8 * 1) | (uint8_t)buf[3] << (8 * 0);
       inotify_flags = flags_to_inotify(request_flags);
-      if (copy_path(buf + 4, len - 4, path, context->real_path) < 0)
+      if (copy_path(buf + 4, len - 4, path) < 0)
         return store_errno(errno, *rbuf, rlen);
 
       if ((wd = inotify_add_watch(context->fd, path, inotify_flags)) >= 0) {
@@ -314,7 +302,7 @@ ErlDrvSSizeT cdrv_control(ErlDrvData drv_data, unsigned int command,
       if (len < 1) // at least one character for filename
         return -1;
 
-      if (copy_path(buf, len, path, context->real_path) < 0)
+      if (copy_path(buf, len, path) < 0)
         return store_errno(errno, *rbuf, rlen);
 
       wd = watch_find_wd(context, path);
@@ -864,30 +852,19 @@ char* watch_find(struct inotify_context *context, struct inotify_event *event,
 
 // }}}
 //----------------------------------------------------------------------------
-// copy path to NUL-terminated buffer, maybe with resolving symlinks {{{
+// copy path to NUL-terminated buffer {{{
 
 static
-ssize_t copy_path(char *path, size_t path_len, char *output, int real)
+ssize_t copy_path(char *path, size_t path_len, char *output)
 {
   if (path_len >= PATH_MAX) {
     errno = ENAMETOOLONG;
     return -1;
   }
 
-  if (!real) {
-    memcpy(output, path, path_len);
-    output[path_len] = 0;
-    return path_len;
-  }
-
-  char tmppath[PATH_MAX];
-  memcpy(tmppath, path, path_len);
-  tmppath[path_len] = 0;
-
-  if (realpath(tmppath, output) == NULL)
-    return -1;
-
-  return 0;
+  memcpy(output, path, path_len);
+  output[path_len] = 0;
+  return path_len;
 }
 
 // }}}
