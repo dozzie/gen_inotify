@@ -47,6 +47,7 @@ Known limitations and problems
 * file renames are not tracked by the port driver, thus messages about a file
   that got renamed carry the file's original path, and removing it from
   watching requires the original name as well
+* unicode characters in filenames are not supported
 
 Requirements
 ------------
