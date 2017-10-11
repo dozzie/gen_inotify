@@ -1,7 +1,10 @@
 {application, gen_inotify, [
   {description, "inotify bindings for Erlang"},
   {vsn, "0.0.0"},
-  {registered, []},
+  {registered, [
+    gen_inotify_sup,
+    gen_inotify_driver_loader
+  ]},
   {applications, [kernel, stdlib]},
   {modules, []},
   {mod, {gen_inotify_app, []}},
