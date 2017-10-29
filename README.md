@@ -55,6 +55,13 @@ Requirements
 Linux kernel 2.6.36 or above and glibc 2.9 or above. These requirements are
 satisfied in Debian 7 Squeeze and CentOS 7.0.
 
+Documentation
+-------------
+
+`gen_inotify` is documented using EDoc. A local copy is generated with
+`make doc` command to `./doc/` directory. An already generated online copy is
+available at <http://dozzie.jarowit.net/api/erlang-gen_inotify/>.
+
 Contact and license
 -------------------
 
