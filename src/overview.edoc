@@ -1,0 +1,44 @@
+@author Stanislaw Klekot <dozzie@jarowit.net>
+@title inotify bindings for Erlang
+@version 0.0.0
+@doc
+
+`gen_inotify' is an Erlang bindings library to `inotify(7)' Linux subsystem to
+watch filesystem events.
+
+== Usage example ==
+
+```
+1> file:make_dir("/tmp/watch").
+ok
+2> {ok, H} = gen_inotify:open().
+{ok,#Port<0.620>}
+3> gen_inotify:add(H, "/tmp/watch", [if_dir, create, delete]).
+ok
+4> file:make_dir("/tmp/watch/subdir").
+ok
+5> file:del_dir("/tmp/watch/subdir").
+ok
+6> flush().
+Shell got {inotify,#Port<0.620>,"/tmp/watch/subdir",0,[is_dir,create]}
+Shell got {inotify,#Port<0.620>,"/tmp/watch/subdir",0,[is_dir,delete]}
+ok
+'''
+
+== /proc interface ==
+
+<i>inotify</i> has per-UID limits on number of sockets, events, and watches.
+These limits can be read and modified using `/proc' interface.
+
+<ul>
+  <li>`/proc/sys/fs/inotify/max_user_instances' -- limit on number of open
+      <i>inotify</i> descriptors</li>
+  <li>`/proc/sys/fs/inotify/max_user_watches' -- limit on total number of
+      watched objects (files and directories) across the <i>inotify</i>
+      descriptors</li>
+  <li>`/proc/sys/fs/inotify/max_queued_events' -- maximum number of unread
+      filesystem events before a queue overflow message is generated and the
+      events start being dropped</li>
+</ul>
+
+Details are described in `inotify(7)' man page.
