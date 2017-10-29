@@ -1,6 +1,6 @@
 @author Stanislaw Klekot <dozzie@jarowit.net>
 @title inotify bindings for Erlang
-@version 0.0.0
+@version 0.1.0
 @doc
 
 `gen_inotify' is an Erlang bindings library to `inotify(7)' Linux subsystem to
