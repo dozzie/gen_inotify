@@ -54,6 +54,25 @@
 
 #define INOTIFY_MAX_EVENT_SIZE (sizeof(struct inotify_event) + NAME_MAX + 1)
 
+#if (ERL_DRV_EXTENDED_MAJOR_VERSION > 3 || \
+     (ERL_DRV_EXTENDED_MAJOR_VERSION == 3 && \
+      ERL_DRV_EXTENDED_MINOR_VERSION >= 0))
+// Erlang 17 (driver 3.0) deprecated driver_send_term() and
+// driver_output_term() functions in favour of erl_drv_send_term() and
+// erl_drv_output_term()
+#  define DRIVER_SEND_TERM(port, receiver, term, n) \
+            erl_drv_send_term(driver_mk_port(port), receiver, term, n)
+#  define DRIVER_OUTPUT_TERM(port, term, n) \
+            erl_drv_output_term(driver_mk_port(port), term, n)
+#else
+// before Erlang 17 (driver 3.0) erl_drv_send_term() and erl_drv_output_term()
+// were not present
+#  define DRIVER_SEND_TERM(port, receiver, term, n) \
+            driver_send_term(port, receiver, term, n)
+#  define DRIVER_OUTPUT_TERM(port, term, n) \
+            driver_output_term(port, term, n)
+#endif
+
 // }}}
 //----------------------------------------------------------
 
@@ -501,7 +520,7 @@ int scan_dir_send_entry(struct inotify_context *context,
 
       ERL_DRV_TUPLE, 5
     };
-    return driver_output_term(context->erl_port, message,
+    return DRIVER_OUTPUT_TERM(context->erl_port, message,
                               sizeof(message) / sizeof(message[0]));
   } else {
     ErlDrvTermData message[] = {
@@ -518,7 +537,7 @@ int scan_dir_send_entry(struct inotify_context *context,
 
       ERL_DRV_TUPLE, 5
     };
-    return driver_output_term(context->erl_port, message,
+    return DRIVER_OUTPUT_TERM(context->erl_port, message,
                               sizeof(message) / sizeof(message[0]));
   }
 }
@@ -537,7 +556,7 @@ int scan_dir_send_error(struct inotify_context *context,
     ERL_DRV_TUPLE, 3
   };
 
-  return driver_output_term(context->erl_port, message,
+  return DRIVER_OUTPUT_TERM(context->erl_port, message,
                             sizeof(message) / sizeof(message[0]));
 }
 
@@ -596,7 +615,7 @@ int send_watch_entry(struct inotify_context *context, ErlDrvTermData receiver,
   message[len++] = ERL_DRV_TUPLE;
   message[len++] = 5; // {inotify_listing, Port, WD, Path, Flags}
 
-  return driver_send_term(context->erl_port, receiver, message, len);
+  return DRIVER_SEND_TERM(context->erl_port, receiver, message, len);
 }
 
 // }}}
@@ -641,7 +660,7 @@ int send_inotify_single_flag_event(struct inotify_context *context,
   message[len++] = ERL_DRV_TUPLE;
   message[len++] = 5; // {inotify, Port, Path, Cookie, [Flag]}
 
-  return driver_output_term(context->erl_port, message, len);
+  return DRIVER_OUTPUT_TERM(context->erl_port, message, len);
 }
 
 static
@@ -706,7 +725,7 @@ int send_inotify_event(struct inotify_context *context,
   message[len++] = ERL_DRV_TUPLE;
   message[len++] = 5; // {inotify, Port, Path, Cookie, Flags}
 
-  return driver_output_term(context->erl_port, message, len);
+  return DRIVER_OUTPUT_TERM(context->erl_port, message, len);
 }
 
 static
@@ -720,7 +739,7 @@ int send_inotify_error(struct inotify_context *context,
     ERL_DRV_TUPLE, 3
   };
 
-  return driver_output_term(context->erl_port, message,
+  return DRIVER_OUTPUT_TERM(context->erl_port, message,
                             sizeof(message) / sizeof(message[0]));
 }
 
