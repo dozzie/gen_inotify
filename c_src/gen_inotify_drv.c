@@ -479,7 +479,7 @@ void scan_directory(struct inotify_context *context, char *dir_path,
 
     size_t basename_len = strlen(entry.d_name);
     // XXX: OS guarantees that the name is NUL-terminated and short enough
-    memcpy(file_path + dir_path_len + 1, entry.d_name, basename_len);
+    memcpy(file_path + dir_path_len + 1, entry.d_name, basename_len + 1);
 
     scan_dir_send_entry(context, file_path, dir_path_len + 1 + basename_len,
                         entry.d_name, basename_len,
