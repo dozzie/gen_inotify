@@ -9,17 +9,19 @@ watch filesystem events.
 == Usage example ==
 
 ```
-1> file:make_dir("/tmp/watch").
+1> application:start(gen_inotify).
 ok
-2> {ok, H} = gen_inotify:open().
+2> file:make_dir("/tmp/watch").
+ok
+3> {ok, H} = gen_inotify:open().
 {ok,#Port<0.620>}
-3> gen_inotify:add(H, "/tmp/watch", [if_dir, create, delete]).
+4> gen_inotify:add(H, "/tmp/watch", [if_dir, create, delete]).
 ok
-4> file:make_dir("/tmp/watch/subdir").
+5> file:make_dir("/tmp/watch/subdir").
 ok
-5> file:del_dir("/tmp/watch/subdir").
+6> file:del_dir("/tmp/watch/subdir").
 ok
-6> flush().
+7> flush().
 Shell got {inotify,#Port<0.620>,"/tmp/watch/subdir",0,[is_dir,create]}
 Shell got {inotify,#Port<0.620>,"/tmp/watch/subdir",0,[is_dir,delete]}
 ok
